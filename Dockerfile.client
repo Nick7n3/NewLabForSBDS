@@ -1,0 +1,68 @@
+# ── Stage 1: Build WASM frontend with trunk ───────────────────────────────────
+FROM rust:latest AS wasm-builder
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup target add wasm32-unknown-unknown
+# Install trunk — single threaded to avoid OOM during the install itself
+RUN CARGO_BUILD_JOBS=1 cargo install trunk --locked
+
+COPY Cargo.toml Cargo.lock* ./
+COPY common    ./common
+COPY frontend  ./frontend
+COPY client/Cargo.toml  ./client/Cargo.toml
+COPY cnc/Cargo.toml     ./cnc/Cargo.toml
+COPY agent/Cargo.toml   ./agent/Cargo.toml
+
+RUN mkdir -p client/src cnc/src agent/src \
+ && echo 'fn main(){}' > client/src/main.rs \
+ && echo 'fn main(){}' > cnc/src/main.rs \
+ && echo 'fn main(){}' > agent/src/main.rs
+
+WORKDIR /build/frontend
+
+# CRITICAL: limit to 1 codegen unit and 1 link job to prevent OOM
+# RUSTFLAGS=-C codegen-units=1 reduces peak memory ~40%
+# CARGO_BUILD_JOBS=2 keeps 2 cores busy without thrashing RAM
+ENV CARGO_BUILD_JOBS=2
+ENV RUSTFLAGS="-C codegen-units=1"
+
+RUN trunk build --release
+
+# ── Stage 2: Build Axum backend ───────────────────────────────────────────────
+FROM rust:latest AS backend-builder
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock* ./
+COPY common  ./common
+COPY client  ./client
+COPY cnc/Cargo.toml      ./cnc/Cargo.toml
+COPY agent/Cargo.toml    ./agent/Cargo.toml
+COPY frontend/Cargo.toml ./frontend/Cargo.toml
+
+RUN mkdir -p cnc/src agent/src frontend/src \
+ && echo 'fn main(){}' > cnc/src/main.rs \
+ && echo 'fn main(){}' > agent/src/main.rs \
+ && echo 'pub fn _stub() {}' > frontend/src/lib.rs
+
+ENV CARGO_BUILD_JOBS=2
+ENV RUSTFLAGS="-C codegen-units=1"
+
+RUN cargo build --release --package client
+
+# ── Stage 3: Minimal runtime ──────────────────────────────────────────────────
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=backend-builder /build/target/release/client /usr/local/bin/client
+COPY --from=wasm-builder    /build/frontend/dist         /app/frontend/dist
+
+WORKDIR /app
+EXPOSE 8080
+CMD ["client"]

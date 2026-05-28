@@ -1,0 +1,31 @@
+FROM rust:latest AS builder
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock* ./
+COPY common  ./common
+COPY agent   ./agent
+COPY client/Cargo.toml   ./client/Cargo.toml
+COPY cnc/Cargo.toml      ./cnc/Cargo.toml
+COPY frontend/Cargo.toml ./frontend/Cargo.toml
+
+# frontend is a [lib] crate — stub needs src/lib.rs
+RUN mkdir -p client/src cnc/src frontend/src \
+ && echo 'fn main(){}' > client/src/main.rs \
+ && echo 'fn main(){}' > cnc/src/main.rs \
+ && echo 'pub fn _stub() {}' > frontend/src/lib.rs
+
+ARG CNC_URL=http://cnc:9000
+ENV CNC_URL=$CNC_URL
+
+RUN cargo build --release --package agent
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/agent /usr/local/bin/agent
+RUN mkdir -p /data
+WORKDIR /data
+CMD ["agent"]

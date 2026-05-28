@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "common",
+    "client",
+    "cnc",
+    "agent",
+    "frontend",
+]
+resolver = "2"
+
+# Shared release profile across all crates
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
